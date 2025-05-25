@@ -1,88 +1,94 @@
-# 456-main/V5_auto_grader/auto_grader.py
+# 456-main/V3_evolution_engine/evolution_engine.py
 
 import json
+import random
 from pathlib import Path
+from datetime import datetime
 
 MODULE_PATH = Path("~/456-main/V1_core_generator/king_module.json").expanduser()
 RESULT_PATH = Path("~/456-main/V2_market_simulator/simulated_result.json").expanduser()
-OUTPUT_PATH = Path("~/456-main/V5_auto_grader/grading_result.json").expanduser()
+GRADING_PATH = Path("~/456-main/V5_auto_grader/grading_result.json").expanduser()
+OUTPUT_PATH = MODULE_PATH  # 直接覆寫 king_module.json
 
 def load_json(path):
     with open(path, "r") as f:
         return json.load(f)
 
-def score_module(result, king):
-    trades = result.get("trades", [])
-    if not trades:
-        return {
-            "score": 10,
-            "grade": "D",
-            "problem_flags": ["無交易", "模組無反應"],
-            "evolution_suggestion": "檢查進場條件、降低延遲與提高進場敏感度"
-        }
+def save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
 
-    win_rate = sum(1 for t in trades if t["pnl"] > 0) / len(trades)
-    total_return = result["final_capital"] - king["capital"]
-    avg_pnl = sum(t["pnl"] for t in trades) / len(trades)
+def bounded(x, min_val, max_val):
+    return max(min_val, min(x, max_val))
 
-    score = 50
+def evolve_parameter(value, scale=0.1, minimum=0.01, maximum=100):
+    mutation = value * random.uniform(-scale, scale)
+    return round(bounded(value + mutation, minimum, maximum), 4)
 
-    # 評分規則
-    if total_return > 0:
-        score += 20
+def evolve_module(king, result, grading):
+    outcome = result["final_capital"] - king["capital"]
+    score = grading.get("score", 50)
+    suggestion = grading.get("evolution_suggestion", "隨機調整")
+    flags = grading.get("problem_flags", [])
+
+    # 根據分數決定突變強度
+    if score >= 80:
+        scale = 0.03
+    elif score >= 60:
+        scale = 0.07
+    elif score >= 40:
+        scale = 0.12
     else:
-        score -= 20
+        scale = 0.2
 
-    if win_rate > 0.7:
-        score += 15
-    elif win_rate < 0.3:
-        score -= 10
+    # 根據情緒風格微調
+    if king["style_profile"]["emotional_tendency"] == "aggressive":
+        scale *= 1.2
+    elif king["style_profile"]["emotional_tendency"] == "cautious":
+        scale *= 0.8
 
-    if avg_pnl > 0:
-        score += 10
-    elif avg_pnl < -1:
-        score -= 10
-
-    # 等級評定
-    grade = "S" if score >= 90 else "A" if score >= 80 else "B" if score >= 60 else "C" if score >= 40 else "D"
-
-    # 問題標籤
-    flags = []
-    if win_rate < 0.3:
-        flags.append("勝率過低")
-    if avg_pnl < -1.5:
-        flags.append("單筆虧損過大")
-    if result["status"] == "dead":
-        flags.append("爆倉")
-    if score > 80 and total_return > 5:
-        flags.append("表現優秀")
-
-    # 建議
+    # 根據問題標籤自動進化偏向
+    if "勝率過低" in flags:
+        king["parameters"]["ma_fast"] = int(evolve_parameter(king["parameters"]["ma_fast"], scale, 1, 100))
+        king["parameters"]["ma_slow"] = int(evolve_parameter(king["parameters"]["ma_slow"], scale, 2, 200))
+    if "單筆虧損過大" in flags:
+        king["parameters"]["sl_pct"] = evolve_parameter(king["parameters"]["sl_pct"], scale, 0.1, 10)
     if "爆倉" in flags:
-        suggestion = "降低槓桿／減少進場倉位／提高停損敏感度"
-    elif "勝率過低" in flags:
-        suggestion = "嘗試調整 ma 參數，縮小進出判斷區間"
-    elif "表現優秀" in flags:
-        suggestion = "維持策略主幹，微幅強化進場條件"
-    else:
-        suggestion = "小幅隨機突變觀察效果"
+        king["parameters"]["sl_pct"] = evolve_parameter(king["parameters"]["sl_pct"], scale * 1.5, 0.5, 10)
+        king["style_profile"]["risk_tolerance"] = "low"
+        king["style_profile"]["emotional_tendency"] = "cautious"
+    if "表現優秀" in flags:
+        scale *= 0.5  # 只做微幅調整
 
-    return {
-        "score": round(score, 2),
-        "grade": grade,
+    # 總體進化參數
+    king["parameters"]["tp_pct"] = evolve_parameter(king["parameters"]["tp_pct"], scale, 0.1, 20)
+
+    # 累計進化歷程
+    king["live_rounds"] += 1
+    king["generation"] += 1
+
+    # 演化摘要
+    king["evolution_summary"] = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "last_outcome": outcome,
+        "score": score,
+        "grade": grading.get("grade"),
         "problem_flags": flags,
-        "evolution_suggestion": suggestion
+        "mutation_strength": scale,
+        "evolution_suggestion": suggestion,
+        "adjusted_parameters": king["parameters"]
     }
+
+    return king
 
 def main():
     king = load_json(MODULE_PATH)
     result = load_json(RESULT_PATH)
-    grading = score_module(result, king)
+    grading = load_json(GRADING_PATH)
 
-    with open(OUTPUT_PATH, "w") as f:
-        json.dump(grading, f, indent=2)
-
-    print(f"[OK] 模組評分完成，分數：{grading['score']}，建議：{grading['evolution_suggestion']}")
+    evolved = evolve_module(king, result, grading)
+    save_json(OUTPUT_PATH, evolved)
+    print(f"[OK] 模組進化完成，已讀取自評建議與分數，live_rounds：{evolved['live_rounds']}")
 
 if __name__ == "__main__":
     main()
